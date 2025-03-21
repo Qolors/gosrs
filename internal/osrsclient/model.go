@@ -1,5 +1,9 @@
 package osrsclient
 
+import (
+        "time"
+)
+
 type Skill struct {
 	ID    int16  `json:"id"`
 	Name  string `json:"name"`
@@ -28,11 +32,11 @@ type apiResponseModel struct {
 }
 
 type PullAllItem struct {
- TimeStamp  time.Time
- Skills     []Skill    `json:"skills"`
- Acitivites []Activity `json:"activities"`
+    TimeStamp  time.Time
+    Skills     []Skill    `json:"skills"`
+    Acitivites []Activity `json:"activities"`
 }
 
 type PullAllHistory struct {
- Items []PullAllItem
+    Items []PullAllItem
 }
