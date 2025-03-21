@@ -26,3 +26,13 @@ type apiResponseModel struct {
 	Skills     []Skill    `json:"skills"`
 	Activities []Activity `json:"activities"`
 }
+
+type PullAllItem struct {
+ TimeStamp  time.Time
+ Skills     []Skill    `json:"skills"`
+ Acitivites []Activity `json:"activities"`
+}
+
+type PullAllHistory struct {
+ Items []PullAllItem
+}
