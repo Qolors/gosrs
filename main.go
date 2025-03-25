@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,11 +11,23 @@ import (
 
 func main() {
 
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(3 * time.Minute)
 	defer ticker.Stop()
+
+	services.InitDBService(context.Background())
+	defer services.CloseConnection()
+
+	courier := services.NewCourier()
+	defer courier.Stop()
 
 	done := make(chan struct{})
 	badrequests := make(chan struct{}, 1)
+
+	fmt.Println("Starting Loop..")
+
+	courier.Hitch(ticker)
+
+	courier.Start()
 
 	go func() {
 
@@ -48,11 +62,20 @@ func main() {
 
 func runprocess() error {
 
-	_, err := services.GetPlayerData()
+	apiResponse, err := services.GetPlayerData()
 
 	if err != nil {
 		return err
 	}
 
-	return nil
+	activities, err := json.Marshal(apiResponse.Activities)
+	skills, err := json.Marshal(apiResponse.Skills)
+
+	if err != nil {
+		return err
+	}
+
+	err = services.InsertPolling(skills, activities)
+
+	return err
 }
