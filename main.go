@@ -14,6 +14,9 @@ func main() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
+	courierTicker := time.NewTicker(5 * time.Minute)
+	defer courierTicker.Stop()
+
 	services.InitDBService(context.Background())
 	defer services.CloseConnection()
 
@@ -25,9 +28,7 @@ func main() {
 
 	fmt.Println("Starting Loop..")
 
-	courier.Hitch(ticker)
-
-	courier.Start()
+	courier.Hitch(courierTicker)
 
 	go func() {
 
@@ -56,6 +57,8 @@ func main() {
 		fmt.Println("Exiting Program..")
 		close(done)
 	}()
+
+	courier.Start()
 
 	<-done
 }

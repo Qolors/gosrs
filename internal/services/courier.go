@@ -311,10 +311,11 @@ func getOverviewPieChart(latest osrsclient.PullAllItem) *charts.Pie {
 // getSkillCandleChart returns a KLine (candlestick) chart of the "Overall" skill's XP progression.
 // Each candle uses two consecutive history items.
 func getSkillCandleChart(history []osrsclient.PullAllItem) *charts.Bar {
+
 	bar := charts.NewBar()
 	bar.SetGlobalOptions(
 		charts.WithTitleOpts(opts.Title{
-			Title: "Skill Experience Gain Over Time",
+			Title: "Average XP in the last hour",
 		}),
 	)
 
@@ -326,13 +327,35 @@ func getSkillCandleChart(history []osrsclient.PullAllItem) *charts.Bar {
 		return bar
 	}
 
+	// Load Eastern Time location.
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		loc = time.Local
+	}
+
+	// Define cutoff: one hour before the latest polled data.
+	latestTime := history[0].TimeStamp
+	cutoffTime := latestTime.Add(-time.Hour)
+
 	// Iterate from newest (index 0) to second-to-last record.
 	for i := 0; i < len(history)-1; i++ {
+		// Break out if the current record is before the cutoff.
+		if history[i].TimeStamp.Before(cutoffTime) {
+			break
+		}
+
+		// If the next record is older than cutoff, skip this pair.
+		if history[i+1].TimeStamp.Before(cutoffTime) {
+			continue
+		}
+
+		// Calculate total XP for the current (newer) record.
 		newerXP := 0
 		for _, skill := range history[i].Skills {
 			newerXP += int(skill.XP)
 		}
 
+		// Calculate total XP for the next (older) record.
 		olderXP := 0
 		for _, skill := range history[i+1].Skills {
 			olderXP += int(skill.XP)
@@ -341,8 +364,8 @@ func getSkillCandleChart(history []osrsclient.PullAllItem) *charts.Bar {
 		// Gain is computed as the difference between the newer and the older record.
 		gain := newerXP - olderXP
 
-		// Use the date from the newer record for the x-axis label.
-		xAxis = append(xAxis, history[i].TimeStamp.Format("2006-01-02"))
+		// Format the x-axis label to Eastern Standard Time.
+		xAxis = append(xAxis, history[i].TimeStamp.In(loc).Format("3:04pm"))
 		gainItems = append(gainItems, opts.BarData{Value: gain})
 	}
 
