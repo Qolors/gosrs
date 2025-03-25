@@ -141,7 +141,7 @@ func generateSkillLineCharts(history []osrsclient.PullAllItem) error {
 			SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: &istrue}))
 
 		// Create an HTML file per skill in the "serve" directory.
-		fileName := fmt.Sprintf("serve/skill_%s.html", sanitizeFileName(skill.Name))
+		fileName := fmt.Sprintf("serve/%s.html", sanitizeFileName(skill.Name))
 		f, err := os.Create(fileName)
 		if err != nil {
 			return err

@@ -1,3 +1,0 @@
-[build]
-  command = "go get . && go run main.go"
-  environment = { GO_VERSION = "1.21.5" }
