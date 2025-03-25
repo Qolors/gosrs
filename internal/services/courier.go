@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/go-echarts/go-echarts/v2/charts"
@@ -47,18 +46,11 @@ func (c *Courier) Start() {
 					log.Println("No history items found")
 					continue
 				}
-				// Generate per-skill and per-activity line charts.
-				//if err := generateSkillLineCharts(history.Items); err != nil {
-				//	log.Println("Skill line charts error:", err)
-				//}
-				//if err := generateActivityLineCharts(history.Items); err != nil {
-				//	log.Println("Activity line charts error:", err)
-				//}
-				// Generate the overview page that contains:
-				// 1. A scatter chart of the latest ranks.
-				// 2. A candle (KLine) chart of the "Overall" XP progression.
 				if err := generateOverviewPage(history.Items); err != nil {
 					log.Println("Overview page error:", err)
+				}
+				if err = generateCharacterBuildPage(history.Items); err != nil {
+					log.Println("Character page error:", err)
 				}
 
 				pushBuild()
@@ -102,11 +94,6 @@ func pushBuild() {
 	fmt.Println("Commit pushed successfully!")
 }
 
-// sanitizeFileName converts a string into a safe filename (lowercase, underscores).
-func sanitizeFileName(name string) string {
-	return strings.ReplaceAll(strings.ToLower(name), " ", "_")
-}
-
 // generateSkillLineCharts creates an HTML line chart for each skill (except "Overall").
 func generateSkillLineCharts(history []osrsclient.PullAllItem) error {
 	if len(history) == 0 {
@@ -139,7 +126,7 @@ func generateSkillLineCharts(history []osrsclient.PullAllItem) error {
 			AddSeries(skill.Name, xpData).
 			SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: &istrue}))
 
-		fileName := fmt.Sprintf("serve/skill_%s.html", sanitizeFileName(skill.Name))
+		fileName := fmt.Sprintf("serve/%s.html", skill.Name)
 		f, err := os.Create(fileName)
 		if err != nil {
 			return err
@@ -181,7 +168,7 @@ func generateActivityLineCharts(history []osrsclient.PullAllItem) error {
 			AddSeries(activity.Name, scoreData).
 			SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: &istrue}))
 
-		fileName := fmt.Sprintf("serve/activity_%s.html", sanitizeFileName(activity.Name))
+		fileName := fmt.Sprintf("serve/%s.html", activity.Name)
 		f, err := os.Create(fileName)
 		if err != nil {
 			return err
@@ -196,16 +183,11 @@ func generateActivityLineCharts(history []osrsclient.PullAllItem) error {
 
 // generateOverviewPage creates an HTML page combining the overview scatter and candle charts.
 func generateOverviewPage(history []osrsclient.PullAllItem) error {
-	scatterChart, err := getOverviewScatterChart(history)
-	if err != nil {
-		return err
-	}
-	candleChart, err := getSkillCandleChart(history)
-	if err != nil {
-		return err
-	}
+
+	candleChart := getSkillCandleChart(history)
+
 	page := components.NewPage()
-	page.AddCharts(scatterChart, candleChart)
+	page.AddCharts(candleChart)
 
 	f, err := os.Create("serve/overview.html")
 	if err != nil {
@@ -215,102 +197,160 @@ func generateOverviewPage(history []osrsclient.PullAllItem) error {
 	return page.Render(f)
 }
 
+func generateCharacterBuildPage(history []osrsclient.PullAllItem) error {
+
+	pieChart := getOverviewPieChart(history[0])
+
+	page := components.NewPage()
+	page.AddCharts(pieChart)
+
+	f, err := os.Create("serve/character.html")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return page.Render(f)
+}
+
 // getOverviewScatterChart returns a scatter chart that plots the latest skills and Activites ranks.
 // X axis: names (categories), Y axis: rank values.
-func getOverviewScatterChart(history []osrsclient.PullAllItem) (*charts.Scatter, error) {
-	if len(history) == 0 {
-		return nil, nil
-	}
-	latest := history[0]
-	var skillsData []opts.ScatterData
-	var activitiesData []opts.ScatterData
-	var categories []string
+func getOverviewPieChart(latest osrsclient.PullAllItem) *charts.Pie {
 
-	// Add skills (excluding "Overall")
+	const actionWithEchartsInstance = `
+		let currentIndex = -1;
+		setInterval(function() {
+		  const myChart = %MY_ECHARTS%;
+		  var dataLen = myChart.getOption().series[0].data.length;
+		  myChart.dispatchAction({
+			type: 'downplay',
+			seriesIndex: 0,
+			dataIndex: currentIndex
+		  });
+		  currentIndex = (currentIndex + 1) % dataLen;
+		  myChart.dispatchAction({
+			type: 'highlight',
+			seriesIndex: 0,
+			dataIndex: currentIndex
+		  });
+		  myChart.dispatchAction({
+			type: 'showTip',
+			seriesIndex: 0,
+			dataIndex: currentIndex
+		  });
+		}, 2000);
+`
+
+	pieData := make(map[string]int32, 4)
+
+	pieData["Combat"] = 0
+	pieData["Gathering"] = 0
+	pieData["Production"] = 0
+	pieData["Utility"] = 0
+
+	pieItems := make([]opts.PieData, 0)
+
 	for _, skill := range latest.Skills {
-		if skill.Name == "Overall" {
-			continue
+		switch name := skill.Name; name {
+		case "Attack", "Defense", "Hitpoints", "Magic", "Prayer", "Ranged", "Strength":
+			pieData["Combat"] += skill.XP
+		case "Farming", "Fishing", "Hunter", "Mining", "Woodcutting":
+			pieData["Gathering"] += skill.XP
+		case "Cooking", "Crafting", "Fletching", "Herblore", "Runecraft", "Smithing":
+			pieData["Production"] += skill.XP
+		case "Agility", "Construction", "Firemaking", "Slayer", "Thieving":
+			pieData["Utility"] += skill.XP
+
 		}
-		skillsData = append(skillsData, opts.ScatterData{
-			Value: []interface{}{skill.Name, skill.Rank},
-		})
-		categories = append(categories, skill.Name)
-	}
-	// Add activities
-	for _, activity := range latest.Acitivites {
-		activitiesData = append(activitiesData, opts.ScatterData{
-			Value: []interface{}{activity.Name, activity.Rank},
-		})
-		categories = append(categories, activity.Name)
 	}
 
-	scatterChart := charts.NewScatter()
-	scatterChart.SetGlobalOptions(
-		charts.WithTitleOpts(opts.Title{Title: "Overview: Latest Ranks"}),
-		charts.WithXAxisOpts(opts.XAxis{
-			Type: "category",
-			Data: categories,
+	pieItems = append(pieItems, opts.PieData{Name: "Combat", Value: pieData["Combat"]})
+	pieItems = append(pieItems, opts.PieData{Name: "Gathering", Value: pieData["Gathering"]})
+	pieItems = append(pieItems, opts.PieData{Name: "Production", Value: pieData["Production"]})
+	pieItems = append(pieItems, opts.PieData{Name: "Utility", Value: pieData["Utility"]})
+
+	pie := charts.NewPie()
+	pie.AddJSFuncStrs(actionWithEchartsInstance)
+	pie.SetGlobalOptions(
+		charts.WithTitleOpts(opts.Title{
+			Title: "An Okay Time Build Allocation",
+			Right: "40%",
+		}),
+		charts.WithTooltipOpts(opts.Tooltip{
+			Trigger:   "item",
+			Formatter: "{a} <br/>{b} : {c}xp ({d}%)",
+		}),
+		charts.WithLegendOpts(opts.Legend{
+			Left:   "left",
+			Orient: "vertical",
 		}),
 	)
-	scatterChart.AddSeries("Skills", skillsData)
-	scatterChart.AddSeries("Activities", activitiesData)
-	return scatterChart, nil
+
+	pie.AddSeries("Experience Dist.", pieItems).
+		SetSeriesOptions(
+			charts.WithLabelOpts(opts.Label{
+				Show:      opts.Bool(true),
+				Formatter: "{b}: {c}",
+			}),
+			charts.WithPieChartOpts(opts.PieChart{
+				Radius: []string{"55%"},
+				Center: []string{"50%", "60%"},
+			}),
+
+			charts.WithEmphasisOpts(opts.Emphasis{
+				ItemStyle: &opts.ItemStyle{
+					ShadowBlur:    10,
+					ShadowOffsetX: 0,
+					ShadowColor:   "rgba(0, 0, 0, 0.5)",
+				},
+			}),
+		)
+
+	return pie
 }
 
 // getSkillCandleChart returns a KLine (candlestick) chart of the "Overall" skill's XP progression.
 // Each candle uses two consecutive history items.
-func getSkillCandleChart(history []osrsclient.PullAllItem) (*charts.Kline, error) {
-	if len(history) < 2 {
-		return nil, nil
-	}
-	var timestamps []string
-	var candleData []opts.KlineData
-
-	for i := 1; i < len(history); i++ {
-		prevItem := history[i-1]
-		currItem := history[i]
-		var prevXP, currXP int32
-		for _, s := range prevItem.Skills {
-			if s.Name == "Overall" {
-				prevXP = s.XP
-				break
-			}
-		}
-		for _, s := range currItem.Skills {
-			if s.Name == "Overall" {
-				currXP = s.XP
-				break
-			}
-		}
-		open := prevXP
-		close := currXP
-		low := open
-		high := close
-		if open > close {
-			low = close
-			high = open
-		} else {
-			low = open
-			high = close
-		}
-		timestamps = append(timestamps, currItem.TimeStamp.Format("2006-01-02 15:04"))
-		candleData = append(candleData, opts.KlineData{
-			Value: []interface{}{open, close, low, high},
-		})
-	}
-
-	var istrue bool = true
-	kline := charts.NewKLine()
-	kline.SetGlobalOptions(
-		charts.WithTitleOpts(opts.Title{Title: "Overall XP Candle Chart"}),
-		charts.WithXAxisOpts(opts.XAxis{SplitNumber: 20}),
-		charts.WithYAxisOpts(opts.YAxis{Scale: &istrue}),
-		charts.WithDataZoomOpts(opts.DataZoom{
-			Start:      50,
-			End:        100,
-			XAxisIndex: []int{0},
+func getSkillCandleChart(history []osrsclient.PullAllItem) *charts.Bar {
+	bar := charts.NewBar()
+	bar.SetGlobalOptions(
+		charts.WithTitleOpts(opts.Title{
+			Title: "Skill Experience Gain Over Time",
 		}),
 	)
-	kline.SetXAxis(timestamps).AddSeries("Overall XP", candleData)
-	return kline, nil
+
+	var xAxis []string
+	var gainItems []opts.BarData
+
+	// Ensure there are at least two history items to compare.
+	if len(history) < 2 {
+		return bar
+	}
+
+	// Iterate from newest (index 0) to second-to-last record.
+	for i := 0; i < len(history)-1; i++ {
+		newerXP := 0
+		for _, skill := range history[i].Skills {
+			newerXP += int(skill.XP)
+		}
+
+		olderXP := 0
+		for _, skill := range history[i+1].Skills {
+			olderXP += int(skill.XP)
+		}
+
+		// Gain is computed as the difference between the newer and the older record.
+		gain := newerXP - olderXP
+
+		// Use the date from the newer record for the x-axis label.
+		xAxis = append(xAxis, history[i].TimeStamp.Format("2006-01-02"))
+		gainItems = append(gainItems, opts.BarData{Value: gain})
+	}
+
+	bar.SetXAxis(xAxis).
+		AddSeries("XP Gain", gainItems).
+		SetSeriesOptions(charts.WithMarkLineNameTypeItemOpts(
+			opts.MarkLineNameTypeItem{Name: "Maximum", Type: "max"},
+			opts.MarkLineNameTypeItem{Name: "Avg", Type: "average"},
+		))
+	return bar
 }

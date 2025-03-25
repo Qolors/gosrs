@@ -11,7 +11,7 @@ import (
 
 func main() {
 
-	ticker := time.NewTicker(3 * time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	services.InitDBService(context.Background())
