@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-echarts/go-echarts/v2/components"
 	"github.com/go-echarts/go-echarts/v2/opts"
 	"github.com/qolors/gosrs/internal/osrsclient"
+	"github.com/qolors/gosrs/internal/services/builder"
 )
 
 type Courier struct {
@@ -53,7 +55,7 @@ func (c *Courier) Start() {
 					log.Println("Character page error:", err)
 				}
 
-				pushBuild()
+				//pushBuild()
 				log.Println("Courier Job Success")
 			case <-c.ctx.Done():
 				log.Println("Courier stopped")
@@ -186,15 +188,11 @@ func generateOverviewPage(history []osrsclient.PullAllItem) error {
 
 	candleChart := getSkillCandleChart(history)
 
-	page := components.NewPage()
-	page.AddCharts(candleChart)
+	var buffer bytes.Buffer
 
-	f, err := os.Create("serve/overview.html")
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return page.Render(f)
+	candleChart.Render(&buffer)
+
+	return builder.BuildWithCharts(buffer.Bytes(), history[0].Skills)
 }
 
 func generateCharacterBuildPage(history []osrsclient.PullAllItem) error {
