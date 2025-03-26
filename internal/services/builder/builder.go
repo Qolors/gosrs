@@ -37,7 +37,7 @@ func BuildWithCharts(b []byte, skills []osrsclient.Skill) error {
 		return err
 	}
 
-	fileName := "serve/xp.html"
+	fileName := "serve/overview.html"
 	f, err := os.Create(fileName)
 	if err != nil {
 		return err

@@ -55,7 +55,7 @@ func (c *Courier) Start() {
 					log.Println("Character page error:", err)
 				}
 
-				//pushBuild()
+				pushBuild()
 				log.Println("Courier Job Success")
 			case <-c.ctx.Done():
 				log.Println("Courier stopped")
