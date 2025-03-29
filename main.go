@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/qolors/gosrs/internal/server"
 	"github.com/qolors/gosrs/internal/services"
 )
 
 func main() {
 
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	courierTicker := time.NewTicker(15 * time.Minute)
+	courierTicker := time.NewTicker(1 * time.Minute)
 	defer courierTicker.Stop()
 
 	services.InitDBService(context.Background())
@@ -59,6 +60,9 @@ func main() {
 	}()
 
 	courier.Start()
+
+	server.StartAndListen()
+	defer server.CloseServer()
 
 	<-done
 }

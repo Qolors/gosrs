@@ -55,7 +55,7 @@ func (c *Courier) Start() {
 					log.Println("Character page error:", err)
 				}
 
-				pushBuild()
+				//pushBuild()
 				log.Println("Courier Job Success")
 			case <-c.ctx.Done():
 				log.Println("Courier stopped")
@@ -97,48 +97,95 @@ func pushBuild() {
 }
 
 // generateSkillLineCharts creates an HTML line chart for each skill (except "Overall").
-func generateSkillLineCharts(history []osrsclient.PullAllItem) error {
+func generateSkillLineCharts(history []osrsclient.PullAllItem) [][]byte {
+	// If no data, just return
 	if len(history) == 0 {
-		return nil
+		fmt.Print("Ok")
 	}
+
+	// We'll cap the data at 100 points
+	limit := 100
+	if len(history) < limit {
+		limit = len(history)
+	}
+
+	var chartbytes [][]byte
+
+	// Loop over skills from the first entry
 	for _, skill := range history[0].Skills {
+		// Skip Overall if you don't want to chart it
 		if skill.Name == "Overall" {
 			continue
 		}
+
+		// Create a new line chart
 		line := charts.NewLine()
+		// Global options: 100% width, a fixed height, title, etc.
 		line.SetGlobalOptions(
-			charts.WithTitleOpts(opts.Title{Title: fmt.Sprintf("Skill: %s Progression", skill.Name)}),
-			charts.WithXAxisOpts(opts.XAxis{Type: "category"}),
+			charts.WithInitializationOpts(opts.Initialization{
+				Width:  "100%", // Makes it responsive
+				Height: "400px",
+			}),
+			charts.WithTitleOpts(opts.Title{
+				Title: fmt.Sprintf("Skill: %s Rank Trend", skill.Name),
+			}),
+			charts.WithXAxisOpts(opts.XAxis{
+				Type: "category",
+			}),
 		)
+
+		// Prepare X-axis (timestamps) and Y-axis data (rank)
 		var timestamps []string
-		var xpData []opts.LineData
-		for _, item := range history {
+		var rankData []opts.LineData
+
+		for i, item := range history {
+			if i >= limit {
+				break
+			}
+			// Format time as desired
 			timestamps = append(timestamps, item.TimeStamp.Format("2006-01-02 15:04"))
-			var xp int32
+
+			// Find the rank for this skill in the current item
+			var rank int32
 			for _, s := range item.Skills {
 				if s.Name == skill.Name {
-					xp = s.XP
+					rank = s.Rank
 					break
 				}
 			}
-			xpData = append(xpData, opts.LineData{Value: xp})
+			rankData = append(rankData, opts.LineData{Value: rank})
 		}
-		var istrue bool = true
-		line.SetXAxis(timestamps).
-			AddSeries(skill.Name, xpData).
-			SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: &istrue}))
 
+		// Enable smooth lines in the chart
+		smooth := true
+		line.SetXAxis(timestamps).
+			AddSeries(skill.Name, rankData).
+			SetSeriesOptions(charts.WithLineChartOpts(
+				opts.LineChart{Smooth: &smooth},
+			))
+
+		// Write the chart to a file named after the skill
 		fileName := fmt.Sprintf("serve/%s.html", skill.Name)
 		f, err := os.Create(fileName)
 		if err != nil {
-			return err
+
 		}
 		defer f.Close()
+
+		// Render the chart into the file
 		if err := line.Render(f); err != nil {
-			return err
+
 		}
+
+		st, err := f.Stat()
+		st.Size()
+		filebyte := make([]byte, st.Size())
+		f.Read(filebyte)
+
+		chartbytes = append(chartbytes, filebyte)
 	}
-	return nil
+
+	return chartbytes
 }
 
 // generateActivityLineCharts creates an HTML line chart for each activity.
@@ -192,7 +239,9 @@ func generateOverviewPage(history []osrsclient.PullAllItem) error {
 
 	candleChart.Render(&buffer)
 
-	return builder.BuildWithCharts(buffer.Bytes(), history[0].Skills)
+	charts := generateSkillLineCharts(history)
+
+	return builder.BuildWithCharts(buffer.Bytes(), history[0].Skills, charts)
 }
 
 func generateCharacterBuildPage(history []osrsclient.PullAllItem) error {

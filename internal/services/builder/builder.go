@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"fmt"
 	"html/template"
 	"os"
 	"strconv"
@@ -8,14 +9,27 @@ import (
 	"github.com/qolors/gosrs/internal/osrsclient"
 )
 
-func BuildWithCharts(b []byte, skills []osrsclient.Skill) error {
+func BuildWithCharts(b []byte, skills []osrsclient.Skill, charts [][]byte) error {
 
 	// Convert bytes to string and mark as safe HTML.
 	safeHTML := template.HTML(string(b))
 
+	chartHtmls := make([]template.HTML, len(charts))
+
+	for _, chartbytes := range charts {
+
+		chartHtml := template.HTML(string(chartbytes))
+
+		chartHtmls = append(chartHtmls, chartHtml)
+
+	}
+
+	fmt.Print(chartHtmls[0])
+
 	// Create a template with a placeholder for our HTML content.
 	data := PageData{
 		Content: safeHTML,
+		Charts:  chartHtmls,
 		Skills:  skills,
 	}
 
@@ -52,7 +66,8 @@ func BuildWithCharts(b []byte, skills []osrsclient.Skill) error {
 }
 
 type PageData struct {
-	Content template.HTML      // The provided chart as safe HTML
+	Content template.HTML
+	Charts  []template.HTML
 	Skills  []osrsclient.Skill // Array of skills to be displayed
 }
 
@@ -60,59 +75,70 @@ var templateHTML = `
 <!DOCTYPE html>
 <html>
 <head>
-	<meta charset="UTF-8">
-	<title>Skill Statistics</title>
-	<style>
-		body {
-			font-family: Arial, sans-serif;
-			margin: 20px;
-		}
-		#chart {
-			margin-bottom: 30px;
-		}
-		table {
-			width: 100%;
-			border-collapse: collapse;
-			margin-bottom: 20px;
-		}
-		th, td {
-			border: 1px solid #ccc;
-			padding: 10px;
-			text-align: left;
-		}
-		th {
-			background-color: #f2f2f2;
-		}
-	</style>
+  <meta charset="UTF-8">
+  <title>Skill Statistics</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background-color: #f7f7f7;
+    }
+    #chart {
+      margin-bottom: 30px;
+    }
+
+    /* Container for all cards */
+    .card-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: 20px;
+      margin-top: 20px;
+    }
+
+    /* Individual skill cards */
+    .skill-card {
+      background-color: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+      padding: 20px;
+    }
+
+    .skill-card h2 {
+      margin: 0 0 10px 0;
+      font-size: 1.2rem;
+    }
+
+    .skill-card p {
+      margin: 8px 0;
+      line-height: 1.4;
+    }
+
+    /* Headline styling */
+    h1 {
+      margin-top: 40px;
+      font-size: 1.8rem;
+    }
+  </style>
 </head>
 <body>
-	<!-- Provided chart content -->
-	<div id="chart">
-		{{.Content}}
-	</div>
-	<h1>Skill Statistics</h1>
-	<table>
-		<thead>
-			<tr>
-				<th>ID</th>
-				<th>Name</th>
-				<th>Rank</th>
-				<th>Level</th>
-				<th>XP</th>
-			</tr>
-		</thead>
-		<tbody>
-			{{range .Skills}}
-			<tr>
-				<td>{{.ID}}</td>
-				<td>{{.Name}}</td>
-				<td>{{.Rank}}</td>
-				<td>{{.Level}}</td>
-				<td>{{.XP}}</td>
-			</tr>
-			{{end}}
-		</tbody>
-	</table>
+  <!-- Provided chart content -->
+  <div id="chart">
+    {{.Content}}
+  </div>
+
+  <h1>Skill Statistics</h1>
+
+  <div class="card-container">
+    {{range $i, $s := .Skills}}
+      <div class="skill-card">
+        <h2>{{$s.Name}}</h2>
+        <p><strong>Rank:</strong> {{$s.Rank}}</p>
+        <p><strong>Level:</strong> {{$s.Level}}</p>
+        <p><strong>XP:</strong> {{$s.XP}}</p>
+		{{index $.Charts $i}}
+      </div>
+    {{end}}
+  </div>
 </body>
 </html>
 `
