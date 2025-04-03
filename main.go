@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -15,21 +14,10 @@ func main() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	courierTicker := time.NewTicker(1 * time.Minute)
-	defer courierTicker.Stop()
-
-	services.InitDBService(context.Background())
-	defer services.CloseConnection()
-
-	courier := services.NewCourier()
-	defer courier.Stop()
-
 	done := make(chan struct{})
 	badrequests := make(chan struct{}, 1)
 
 	fmt.Println("Starting Loop..")
-
-	courier.Hitch(courierTicker)
 
 	go func() {
 
@@ -59,8 +47,6 @@ func main() {
 		close(done)
 	}()
 
-	courier.Start()
-
 	server.StartAndListen()
 	defer server.CloseServer()
 
@@ -81,8 +67,6 @@ func runprocess() error {
 	if err != nil {
 		return err
 	}
-
-	err = services.InsertPolling(skills, activities)
 
 	return err
 }
