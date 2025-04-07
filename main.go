@@ -1,13 +1,15 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/qolors/gosrs/internal/server"
 	"github.com/qolors/gosrs/internal/services"
+	"github.com/qolors/gosrs/internal/services/queue"
 )
+
+var pollBuffer *queue.RingBuffer
+var c *services.Courier
 
 func main() {
 
@@ -16,6 +18,10 @@ func main() {
 
 	done := make(chan struct{})
 	badrequests := make(chan struct{}, 1)
+
+	c = services.NewCourier()
+
+	pollBuffer = queue.NewRingBuffer(1440)
 
 	fmt.Println("Starting Loop..")
 
@@ -26,17 +32,19 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				fmt.Println("Running Poll at", time.Now())
+				fmt.Println("Running Poll at", time.Now().UTC())
 				if err := runprocess(); err != nil {
 					badRequestCount++
-					fmt.Print("Job Fail")
+					fmt.Println("Job Fail")
 					if badRequestCount >= 3 {
 						fmt.Println("Exiting as too many Bad Requests..")
 						badrequests <- struct{}{}
 						return
 					}
+				} else {
+					fmt.Println("Successful Run")
+					badRequestCount = 0
 				}
-				fmt.Print("Job Success")
 			}
 		}
 	}()
@@ -46,9 +54,6 @@ func main() {
 		fmt.Println("Exiting Program..")
 		close(done)
 	}()
-
-	server.StartAndListen()
-	defer server.CloseServer()
 
 	<-done
 }
@@ -61,11 +66,24 @@ func runprocess() error {
 		return err
 	}
 
-	activities, err := json.Marshal(apiResponse.Activities)
-	skills, err := json.Marshal(apiResponse.Skills)
+	stamped := queue.StampedData{Skills: apiResponse.Skills, Activities: apiResponse.Activities, Timestamp: time.Now().UTC()}
 
-	if err != nil {
-		return err
+	haschange := pollBuffer.Add(stamped)
+
+	if haschange {
+		if !c.Running {
+			fmt.Println("Starting new xp session..")
+			c.Start()
+			c.Pack <- stamped
+		} else {
+			c.Pack <- stamped
+		}
+
+	} else {
+		if c.Running {
+			fmt.Println("Session ending due to 0 change..")
+			c.Send <- pollBuffer.GetAll()
+		}
 	}
 
 	return err

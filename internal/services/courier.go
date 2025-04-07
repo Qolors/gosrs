@@ -2,425 +2,341 @@ package services
 
 import (
 	"bytes"
-	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
+	"net/http"
 	"os"
-	"os/exec"
 	"time"
 
 	"github.com/go-echarts/go-echarts/v2/charts"
-	"github.com/go-echarts/go-echarts/v2/components"
 	"github.com/go-echarts/go-echarts/v2/opts"
-	"github.com/qolors/gosrs/internal/osrsclient"
-	"github.com/qolors/gosrs/internal/services/builder"
+	"github.com/go-echarts/snapshot-chromedp/render"
+	"github.com/qolors/gosrs/internal/services/queue"
 )
 
 type Courier struct {
-	t      *time.Ticker
-	ctx    context.Context
-	cancel context.CancelFunc
+	buffer  []queue.StampedData
+	Pack    chan (queue.StampedData)
+	Receive chan (queue.StampedData)
+	Send    chan ([]queue.StampedData)
+	Running bool
 }
 
 func NewCourier() *Courier {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &Courier{
-		ctx:    ctx,
-		cancel: cancel,
+		Running: false,
+		Pack:    make(chan queue.StampedData),
+		Send:    make(chan []queue.StampedData),
+		Receive: make(chan queue.StampedData, 1),
 	}
 }
 
-func (c *Courier) Hitch(timer *time.Ticker) {
-	c.t = timer
-}
-
 func (c *Courier) Start() {
+	c.Running = true
 	go func() {
 		for {
 			select {
-			case <-c.t.C:
-				history, err := PullAll()
-				if err != nil {
-					log.Println("Error polling stats:", err)
-					continue
-				}
-				if len(history.Items) == 0 {
-					log.Println("No history items found")
-					continue
-				}
-				if err := generateOverviewPage(history.Items); err != nil {
-					log.Println("Overview page error:", err)
-				}
-				if err = generateCharacterBuildPage(history.Items); err != nil {
-					log.Println("Character page error:", err)
-				}
-
-				//pushBuild()
-				log.Println("Courier Job Success")
-			case <-c.ctx.Done():
-				log.Println("Courier stopped")
+			case stamped := <-c.Pack:
+				c.buffer = append(c.buffer, stamped)
+				log.Println("Packed minute frame data")
+			case stamps := <-c.Send:
+				log.Println("Session Over Building Report")
+				c.build(stamps)
 				return
 			}
 		}
 	}()
 }
 
-func (c *Courier) Stop() {
-	c.cancel()
+func (c *Courier) build(data []queue.StampedData) {
+	// Stop the courier while building the webhook.
+	c.Running = false
+
+	webhookURL := "https://discord.com/api/webhooks/1357809722153111754/7cY_yCgShFbKmPIvP7LKb-9YFD01ogqEjzJXMQOtNg2vLD1N36UiR-cFG2ol6RvREohv"
+
+	// Ensure we have enough data points to calculate gains.
+	if len(data) < 2 {
+		fmt.Println("Not enough data to compute session gains.")
+		return
+	}
+
+	// Compute differences between the first and last stamped data.
+	first := data[0]
+	last := data[len(data)-1]
+
+	var skillNames, xpGains, rankGains string
+	for _, s1 := range first.Skills {
+		// Skip unwanted skills.
+		if s1.Name == "Overall" {
+			continue
+		}
+		// Find the matching skill in the last record.
+		for _, s2 := range last.Skills {
+			if s2.Name == s1.Name {
+
+				if s1.XP-s2.XP == 0 {
+					continue
+				}
+				xpDiff := s2.XP - s1.XP
+				rankDiff := s1.Rank - s2.Rank
+
+				skillNames += s1.Name + "\n"
+				xpGains += fmt.Sprintf("+%d\n", xpDiff)
+				rankGains += fmt.Sprintf("+%d (#%d)\n", rankDiff, s2.Rank)
+				break
+			}
+		}
+	}
+
+	// Build the first embed ("XP Overview") with the session details.
+	overviewEmbed := DiscordEmbed{
+		Title: "XP Overview",
+		Color: 14500675,
+		Thumbnail: &DiscordEmbedThumbnail{
+			URL: "https://i.imgur.com/1NqptGr.png",
+		},
+		Fields: []DiscordEmbedField{
+			{
+				Name:   "Skill",
+				Value:  skillNames,
+				Inline: true,
+			},
+			{
+				Name:   "XP Gain",
+				Value:  xpGains,
+				Inline: true,
+			},
+			{
+				Name:   "Rank Gain",
+				Value:  rankGains,
+				Inline: true,
+			},
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Build the overall webhook payload with two embeds.
+	webhookData := DiscordWebhook{
+		Content:   "Test Grind Session",
+		Username:  "Grind Bot",
+		AvatarURL: "https://example.com/avatar.png",
+		Embeds:    []DiscordEmbed{overviewEmbed},
+	}
+
+	// Generate the daylinechart image using the snapshot-chromedp approach.
+	dayLineChart, err := generateLargeLineChartImage(data)
+	if err != nil {
+		fmt.Println("Error Generating Chart:", err)
+		// If the image generation fails, send the webhook without the attachment.
+		if err := sendDiscordWebhook(webhookURL, webhookData); err != nil {
+			fmt.Println("Error sending webhook:", err)
+		} else {
+			fmt.Println("Webhook sent successfully!")
+		}
+	} else {
+		// Set a message content and send the webhook with the daylinechart as the attachment.
+		content := "Session XP"
+		if err := sendDiscordWebhookWithAttachment(webhookURL, content, dayLineChart, "my-chart.png", webhookData); err != nil {
+			fmt.Println("Error sending webhook with attachment:", err)
+		} else {
+			fmt.Println("Webhook sent successfully!")
+		}
+	}
+
+	// Reset the current session buffer.
+	c.buffer = c.buffer[:0]
 }
 
-// pushBuild adds, commits, and pushes the generated changes to your repository.
-func pushBuild() {
-	addCmd := exec.Command("git", "add", ".")
-	err := addCmd.Run()
-	if err != nil {
-		fmt.Println("Error adding files:", err)
-		return
-	}
-
-	commitMsg := fmt.Sprintf("Build-%s", time.Now().Format("2006-01-02_15-04-05"))
-	commitCmd := exec.Command("git", "commit", "-m", commitMsg)
-	err = commitCmd.Run()
-	if err != nil {
-		fmt.Println("Error committing changes:", err)
-		return
-	}
-
-	pushCmd := exec.Command("git", "push", "origin", "main")
-	err = pushCmd.Run()
-	if err != nil {
-		fmt.Println("Error pushing commit:", err)
-		return
-	}
-
-	fmt.Println("Commit pushed successfully!")
+// DiscordWebhook is the overall payload.
+type DiscordWebhook struct {
+	Content   string         `json:"content,omitempty"`
+	Username  string         `json:"username,omitempty"`
+	AvatarURL string         `json:"avatar_url,omitempty"`
+	Embeds    []DiscordEmbed `json:"embeds,omitempty"`
 }
 
-// generateSkillLineCharts creates an HTML line chart for each skill (except "Overall").
-func generateSkillLineCharts(history []osrsclient.PullAllItem) [][]byte {
-	// If no data, just return
+// DiscordEmbed represents an embed in the payload.
+type DiscordEmbed struct {
+	Title       string                 `json:"title,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	URL         string                 `json:"url,omitempty"`
+	Color       int                    `json:"color,omitempty"`
+	Thumbnail   *DiscordEmbedThumbnail `json:"thumbnail,omitempty"`
+	Fields      []DiscordEmbedField    `json:"fields,omitempty"`
+	Timestamp   string                 `json:"timestamp,omitempty"`
+	Image       *DiscordEmbedImage     `json:"image,omitempty"`
+}
+
+// DiscordEmbedThumbnail holds the thumbnail URL.
+type DiscordEmbedThumbnail struct {
+	URL string `json:"url,omitempty"`
+}
+
+// DiscordEmbedField is used for each field in an embed.
+type DiscordEmbedField struct {
+	Name   string `json:"name,omitempty"`
+	Value  string `json:"value,omitempty"`
+	Inline bool   `json:"inline,omitempty"`
+}
+
+// DiscordEmbedImage holds an image URL.
+type DiscordEmbedImage struct {
+	URL string `json:"url,omitempty"`
+}
+
+// sendDiscordWebhook posts the webhook data to the specified Discord webhook URL.
+func sendDiscordWebhook(webhookURL string, webhookData DiscordWebhook) error {
+	// Marshal the webhook data to JSON.
+	payloadBytes, err := json.Marshal(webhookData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal webhook data: %v", err)
+	}
+
+	// Create a new POST request with the JSON payload.
+	req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute the HTTP request.
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for non-success HTTP status codes.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("received non-success status code: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// sendDiscordWebhookWithAttachment sends a Discord webhook message with a file attachment.
+// The fileBytes parameter is the content of the file (e.g. the HTML chart), and fileName is the attachment's name.
+func sendDiscordWebhookWithAttachment(webhookURL, content string, fileBytes []byte, fileName string, webhookData DiscordWebhook) error {
+	var b bytes.Buffer
+	writer := multipart.NewWriter(&b)
+
+	// Marshal the webhook data (including the embed with our image reference).
+	payloadBytes, err := json.Marshal(webhookData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Create the "payload_json" form field.
+	part, err := writer.CreateFormField("payload_json")
+	if err != nil {
+		return fmt.Errorf("failed to create form field: %w", err)
+	}
+	if _, err = part.Write(payloadBytes); err != nil {
+		return fmt.Errorf("failed to write payload: %w", err)
+	}
+
+	// Create the file attachment form field.
+	part, err = writer.CreateFormFile("file", fileName)
+	if err != nil {
+		return fmt.Errorf("failed to create form file: %w", err)
+	}
+	if _, err = part.Write(fileBytes); err != nil {
+		return fmt.Errorf("failed to write file bytes: %w", err)
+	}
+	writer.Close()
+
+	req, err := http.NewRequest("POST", webhookURL, &b)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("non-success status code %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func generateLargeLineChartImage(history []queue.StampedData) ([]byte, error) {
 	if len(history) == 0 {
-		fmt.Print("Ok")
+		return nil, errors.New("no data available")
 	}
 
-	// We'll cap the data at 100 points
-	limit := 100
-	if len(history) < limit {
-		limit = len(history)
+	// Use only the last 1440 entries (or less if history is shorter).
+	start := 0
+	if len(history) > 1440 {
+		start = len(history) - 1440
 	}
+	limitedHistory := history[start:]
 
-	var chartbytes [][]byte
+	// Create a new line chart.
+	line := charts.NewLine()
+	line.SetGlobalOptions(
+		charts.WithInitializationOpts(opts.Initialization{
+			Width:           "1920px", // Responsive width
+			Height:          "1080px", // Increased height for clarity
+			BackgroundColor: "#000000",
+		}),
+		charts.WithXAxisOpts(opts.XAxis{
+			Type: "category",
+		}),
+	)
 
-	// Loop over skills from the first entry
+	// Prepare the X-axis (timestamps in HH:MM format).
+	var timestamps []string
+	for _, item := range limitedHistory {
+		timestamps = append(timestamps, item.Timestamp.Format("15:04"))
+	}
+	line.SetXAxis(timestamps)
+
+	// Add one series for each skill (skipping "Overall").
 	for _, skill := range history[0].Skills {
-		// Skip Overall if you don't want to chart it
 		if skill.Name == "Overall" {
 			continue
 		}
-
-		// Create a new line chart
-		line := charts.NewLine()
-		// Global options: 100% width, a fixed height, title, etc.
-		line.SetGlobalOptions(
-			charts.WithInitializationOpts(opts.Initialization{
-				Width:  "100%", // Makes it responsive
-				Height: "400px",
-			}),
-			charts.WithTitleOpts(opts.Title{
-				Title: fmt.Sprintf("Skill: %s Rank Trend", skill.Name),
-			}),
-			charts.WithXAxisOpts(opts.XAxis{
-				Type: "category",
-			}),
-		)
-
-		// Prepare X-axis (timestamps) and Y-axis data (rank)
-		var timestamps []string
 		var rankData []opts.LineData
-
-		for i, item := range history {
-			if i >= limit {
-				break
-			}
-			// Format time as desired
-			timestamps = append(timestamps, item.TimeStamp.Format("2006-01-02 15:04"))
-
-			// Find the rank for this skill in the current item
+		for _, item := range limitedHistory {
+			// Find the matching skill rank in this record.
 			var rank int32
 			for _, s := range item.Skills {
 				if s.Name == skill.Name {
-					rank = s.Rank
+					rank = s.XP
 					break
 				}
 			}
 			rankData = append(rankData, opts.LineData{Value: rank})
 		}
-
-		// Enable smooth lines in the chart
 		smooth := true
-		line.SetXAxis(timestamps).
-			AddSeries(skill.Name, rankData).
-			SetSeriesOptions(charts.WithLineChartOpts(
-				opts.LineChart{Smooth: &smooth},
-			))
-
-		// Write the chart to a file named after the skill
-		fileName := fmt.Sprintf("serve/%s.html", skill.Name)
-		f, err := os.Create(fileName)
-		if err != nil {
-
-		}
-		defer f.Close()
-
-		// Render the chart into the file
-		if err := line.Render(f); err != nil {
-
-		}
-
-		st, err := f.Stat()
-		st.Size()
-		filebyte := make([]byte, st.Size())
-		f.Read(filebyte)
-
-		chartbytes = append(chartbytes, filebyte)
+		line.AddSeries(skill.Name, rankData).
+			SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: &smooth}))
 	}
 
-	return chartbytes
-}
-
-// generateActivityLineCharts creates an HTML line chart for each activity.
-func generateActivityLineCharts(history []osrsclient.PullAllItem) error {
-	if len(history) == 0 {
-		return nil
-	}
-	for _, activity := range history[0].Acitivites {
-		line := charts.NewLine()
-		line.SetGlobalOptions(
-			charts.WithTitleOpts(opts.Title{Title: fmt.Sprintf("Activity: %s Progression", activity.Name)}),
-			charts.WithXAxisOpts(opts.XAxis{Type: "category"}),
-		)
-		var timestamps []string
-		var scoreData []opts.LineData
-		for _, item := range history {
-			timestamps = append(timestamps, item.TimeStamp.Format("2006-01-02 15:04"))
-			var score int32
-			for _, a := range item.Acitivites {
-				if a.Name == activity.Name {
-					score = a.Score
-					break
-				}
-			}
-			scoreData = append(scoreData, opts.LineData{Value: score})
-		}
-		var istrue bool = true
-		line.SetXAxis(timestamps).
-			AddSeries(activity.Name, scoreData).
-			SetSeriesOptions(charts.WithLineChartOpts(opts.LineChart{Smooth: &istrue}))
-
-		fileName := fmt.Sprintf("serve/%s.html", activity.Name)
-		f, err := os.Create(fileName)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		if err := line.Render(f); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// generateOverviewPage creates an HTML page combining the overview scatter and candle charts.
-func generateOverviewPage(history []osrsclient.PullAllItem) error {
-
-	candleChart := getSkillCandleChart(history)
-
-	var buffer bytes.Buffer
-
-	candleChart.Render(&buffer)
-
-	charts := generateSkillLineCharts(history)
-
-	return builder.BuildWithCharts(buffer.Bytes(), history[0].Skills, charts)
-}
-
-func generateCharacterBuildPage(history []osrsclient.PullAllItem) error {
-
-	pieChart := getOverviewPieChart(history[0])
-
-	page := components.NewPage()
-	page.AddCharts(pieChart)
-
-	f, err := os.Create("serve/character.html")
+	// Use the snapshot-chromedp approach to generate the chart image.
+	// This function takes the HTML content from line.RenderContent() and outputs a PNG file.
+	err := render.MakeChartSnapshot(line.RenderContent(), "my-chart.png")
 	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return page.Render(f)
-}
-
-// getOverviewScatterChart returns a scatter chart that plots the latest skills and Activites ranks.
-// X axis: names (categories), Y axis: rank values.
-func getOverviewPieChart(latest osrsclient.PullAllItem) *charts.Pie {
-
-	const actionWithEchartsInstance = `
-		let currentIndex = -1;
-		setInterval(function() {
-		  const myChart = %MY_ECHARTS%;
-		  var dataLen = myChart.getOption().series[0].data.length;
-		  myChart.dispatchAction({
-			type: 'downplay',
-			seriesIndex: 0,
-			dataIndex: currentIndex
-		  });
-		  currentIndex = (currentIndex + 1) % dataLen;
-		  myChart.dispatchAction({
-			type: 'highlight',
-			seriesIndex: 0,
-			dataIndex: currentIndex
-		  });
-		  myChart.dispatchAction({
-			type: 'showTip',
-			seriesIndex: 0,
-			dataIndex: currentIndex
-		  });
-		}, 2000);
-`
-
-	pieData := make(map[string]int32, 4)
-
-	pieData["Combat"] = 0
-	pieData["Gathering"] = 0
-	pieData["Production"] = 0
-	pieData["Utility"] = 0
-
-	pieItems := make([]opts.PieData, 0)
-
-	for _, skill := range latest.Skills {
-		switch name := skill.Name; name {
-		case "Attack", "Defense", "Hitpoints", "Magic", "Prayer", "Ranged", "Strength":
-			pieData["Combat"] += skill.XP
-		case "Farming", "Fishing", "Hunter", "Mining", "Woodcutting":
-			pieData["Gathering"] += skill.XP
-		case "Cooking", "Crafting", "Fletching", "Herblore", "Runecraft", "Smithing":
-			pieData["Production"] += skill.XP
-		case "Agility", "Construction", "Firemaking", "Slayer", "Thieving":
-			pieData["Utility"] += skill.XP
-
-		}
+		return nil, fmt.Errorf("failed to make chart snapshot: %w", err)
 	}
 
-	pieItems = append(pieItems, opts.PieData{Name: "Combat", Value: pieData["Combat"]})
-	pieItems = append(pieItems, opts.PieData{Name: "Gathering", Value: pieData["Gathering"]})
-	pieItems = append(pieItems, opts.PieData{Name: "Production", Value: pieData["Production"]})
-	pieItems = append(pieItems, opts.PieData{Name: "Utility", Value: pieData["Utility"]})
-
-	pie := charts.NewPie()
-	pie.AddJSFuncStrs(actionWithEchartsInstance)
-	pie.SetGlobalOptions(
-		charts.WithTitleOpts(opts.Title{
-			Title: "An Okay Time Build Allocation",
-			Right: "40%",
-		}),
-		charts.WithTooltipOpts(opts.Tooltip{
-			Trigger:   "item",
-			Formatter: "{a} <br/>{b} : {c}xp ({d}%)",
-		}),
-		charts.WithLegendOpts(opts.Legend{
-			Left:   "left",
-			Orient: "vertical",
-		}),
-	)
-
-	pie.AddSeries("Experience Dist.", pieItems).
-		SetSeriesOptions(
-			charts.WithLabelOpts(opts.Label{
-				Show:      opts.Bool(true),
-				Formatter: "{b}: {c}",
-			}),
-			charts.WithPieChartOpts(opts.PieChart{
-				Radius: []string{"55%"},
-				Center: []string{"50%", "60%"},
-			}),
-
-			charts.WithEmphasisOpts(opts.Emphasis{
-				ItemStyle: &opts.ItemStyle{
-					ShadowBlur:    10,
-					ShadowOffsetX: 0,
-					ShadowColor:   "rgba(0, 0, 0, 0.5)",
-				},
-			}),
-		)
-
-	return pie
-}
-
-// getSkillCandleChart returns a KLine (candlestick) chart of the "Overall" skill's XP progression.
-// Each candle uses two consecutive history items.
-func getSkillCandleChart(history []osrsclient.PullAllItem) *charts.Bar {
-
-	bar := charts.NewBar()
-	bar.SetGlobalOptions(
-		charts.WithTitleOpts(opts.Title{
-			Title: "Average XP in the last hour",
-		}),
-	)
-
-	var xAxis []string
-	var gainItems []opts.BarData
-
-	// Ensure there are at least two history items to compare.
-	if len(history) < 2 {
-		return bar
-	}
-
-	// Load Eastern Time location.
-	loc, err := time.LoadLocation("America/New_York")
+	// Read the generated PNG file.
+	imgBytes, err := os.ReadFile("my-chart.png")
 	if err != nil {
-		loc = time.Local
+		return nil, fmt.Errorf("failed to read image file: %w", err)
 	}
 
-	// Define cutoff: one hour before the latest polled data.
-	latestTime := history[0].TimeStamp
-	cutoffTime := latestTime.Add(-time.Hour)
-
-	// Iterate from newest (index 0) to second-to-last record.
-	for i := 0; i < len(history)-1; i++ {
-		// Break out if the current record is before the cutoff.
-		if history[i].TimeStamp.Before(cutoffTime) {
-			break
-		}
-
-		// If the next record is older than cutoff, skip this pair.
-		if history[i+1].TimeStamp.Before(cutoffTime) {
-			continue
-		}
-
-		// Calculate total XP for the current (newer) record.
-		newerXP := 0
-		for _, skill := range history[i].Skills {
-			newerXP += int(skill.XP)
-		}
-
-		// Calculate total XP for the next (older) record.
-		olderXP := 0
-		for _, skill := range history[i+1].Skills {
-			olderXP += int(skill.XP)
-		}
-
-		// Gain is computed as the difference between the newer and the older record.
-		gain := newerXP - olderXP
-
-		// Format the x-axis label to Eastern Standard Time.
-		xAxis = append(xAxis, history[i].TimeStamp.In(loc).Format("3:04pm"))
-		gainItems = append(gainItems, opts.BarData{Value: gain})
-	}
-
-	bar.SetXAxis(xAxis).
-		AddSeries("XP Gain", gainItems).
-		SetSeriesOptions(charts.WithMarkLineNameTypeItemOpts(
-			opts.MarkLineNameTypeItem{Name: "Maximum", Type: "max"},
-			opts.MarkLineNameTypeItem{Name: "Avg", Type: "average"},
-		))
-	return bar
+	return imgBytes, nil
 }
