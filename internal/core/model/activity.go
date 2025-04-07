@@ -1,4 +1,4 @@
-package entities
+package model
 
 type Activity struct {
 	ID    int16  `json:"id"`

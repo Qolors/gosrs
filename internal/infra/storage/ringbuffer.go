@@ -1,12 +1,15 @@
-package queue
+package storage
 
 import (
 	"fmt"
 	"sync"
+
+	"github.com/qolors/gosrs/internal/core/model"
 )
 
+// An In-Memory Storage Option
 type RingBuffer struct {
-	buffer []Interface{}
+	buffer []model.StampedData
 	size   int
 	next   int
 	full   bool
@@ -16,12 +19,12 @@ type RingBuffer struct {
 // Creates a new buffer with the provided capacity
 func NewRingBuffer(capacity int) *RingBuffer {
 	return &RingBuffer{
-		buffer: make([]Interface{}, capacity),
+		buffer: make([]model.StampedData, capacity),
 		size:   capacity,
 	}
 }
 
-func (rb *RingBuffer) GetAll() []Interface{} {
+func (rb *RingBuffer) GetAll() []model.StampedData {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -29,13 +32,13 @@ func (rb *RingBuffer) GetAll() []Interface{} {
 		return rb.buffer[:rb.next]
 	}
 
-	result := make([]Interface{}, rb.size)
+	result := make([]model.StampedData, rb.size)
 	copy(result, rb.buffer[rb.next:])
 	copy(result[rb.size-rb.next:], rb.buffer[:rb.next])
 	return result
 }
 
-func (rb *RingBuffer) Add(item Interface{}) bool {
+func (rb *RingBuffer) Add(item model.StampedData) bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -63,14 +66,12 @@ func (rb *RingBuffer) Add(item Interface{}) bool {
 	return change
 }
 
-func haschanges(i1 Interface{}, i2 Interface{}) bool {
+func haschanges(i1 model.StampedData, i2 model.StampedData) bool {
+
 	var change bool
-	//return i1.Skills[0].XP != i2.Skills[0].XP
-	for i, skill := range i1.Skills {
-		if skill.XP != i2.Skills[i].XP {
-			change = true
-			break
-		}
+
+	if i1.Skills[0].XP != i2.Skills[0].XP {
+		change = true
 	}
 
 	return change

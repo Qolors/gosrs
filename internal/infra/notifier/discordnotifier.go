@@ -1,4 +1,4 @@
-package services
+package notifier
 
 import (
 	"bytes"
@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -15,49 +14,18 @@ import (
 	"github.com/go-echarts/go-echarts/v2/charts"
 	"github.com/go-echarts/go-echarts/v2/opts"
 	"github.com/go-echarts/snapshot-chromedp/render"
-	"github.com/qolors/gosrs/internal/services/queue"
+	"github.com/qolors/gosrs/internal/core/model"
 )
 
-type Courier struct {
-	buffer  []queue.StampedData
-	Pack    chan (queue.StampedData)
-	Receive chan (queue.StampedData)
-	Send    chan ([]queue.StampedData)
-	Running bool
+type DiscordNotifier struct {
+	webhookUrl string
 }
 
-func NewCourier() *Courier {
-	return &Courier{
-		Running: false,
-		Pack:    make(chan queue.StampedData),
-		Send:    make(chan []queue.StampedData),
-		Receive: make(chan queue.StampedData, 1),
-	}
+func NewDiscordNotifier(whUrl string) *DiscordNotifier {
+	return &DiscordNotifier{webhookUrl: whUrl}
 }
 
-func (c *Courier) Start() {
-	c.Running = true
-	go func() {
-		for {
-			select {
-			case stamped := <-c.Pack:
-				c.buffer = append(c.buffer, stamped)
-				log.Println("Packed minute frame data")
-			case stamps := <-c.Send:
-				log.Println("Session Over Building Report")
-				c.build(stamps)
-				return
-			}
-		}
-	}()
-}
-
-func (c *Courier) build(data []queue.StampedData) {
-	// Stop the courier while building the webhook.
-	c.Running = false
-
-	webhookURL := "https://discord.com/api/webhooks/1357809722153111754/7cY_yCgShFbKmPIvP7LKb-9YFD01ogqEjzJXMQOtNg2vLD1N36UiR-cFG2ol6RvREohv"
-
+func (dn *DiscordNotifier) SendNotification(data []model.StampedData) {
 	// Ensure we have enough data points to calculate gains.
 	if len(data) < 2 {
 		fmt.Println("Not enough data to compute session gains.")
@@ -132,7 +100,7 @@ func (c *Courier) build(data []queue.StampedData) {
 	if err != nil {
 		fmt.Println("Error Generating Chart:", err)
 		// If the image generation fails, send the webhook without the attachment.
-		if err := sendDiscordWebhook(webhookURL, webhookData); err != nil {
+		if err := sendDiscordWebhook(dn.webhookUrl, webhookData); err != nil {
 			fmt.Println("Error sending webhook:", err)
 		} else {
 			fmt.Println("Webhook sent successfully!")
@@ -140,15 +108,13 @@ func (c *Courier) build(data []queue.StampedData) {
 	} else {
 		// Set a message content and send the webhook with the daylinechart as the attachment.
 		content := "Session XP"
-		if err := sendDiscordWebhookWithAttachment(webhookURL, content, dayLineChart, "my-chart.png", webhookData); err != nil {
+		if err := sendDiscordWebhookWithAttachment(dn.webhookUrl, content, dayLineChart, "my-chart.png", webhookData); err != nil {
 			fmt.Println("Error sending webhook with attachment:", err)
 		} else {
 			fmt.Println("Webhook sent successfully!")
 		}
 	}
 
-	// Reset the current session buffer.
-	c.buffer = c.buffer[:0]
 }
 
 // DiscordWebhook is the overall payload.
@@ -271,7 +237,7 @@ func sendDiscordWebhookWithAttachment(webhookURL, content string, fileBytes []by
 	return nil
 }
 
-func generateLargeLineChartImage(history []queue.StampedData) ([]byte, error) {
+func generateLargeLineChartImage(history []model.StampedData) ([]byte, error) {
 	if len(history) == 0 {
 		return nil, errors.New("no data available")
 	}

@@ -1,4 +1,6 @@
-package osrsclient
+package api
+
+import "github.com/qolors/gosrs/internal/core/model"
 
 func ConvertToDTO(raw apiResponseModel) APIResponse {
 
@@ -17,11 +19,11 @@ func ConvertToDTO(raw apiResponseModel) APIResponse {
 }
 
 type APIResponse struct {
-	Skills     []Skill
-	Activities []Activity
+	Skills     []model.Skill
+	Activities []model.Activity
 }
 
 type apiResponseModel struct {
-	Skills     []Skill    `json:"skills"`
-	Activities []Activity `json:"activities"`
+	Skills     []model.Skill    `json:"skills"`
+	Activities []model.Activity `json:"activities"`
 }
