@@ -6,14 +6,13 @@ import (
 )
 
 type Poller struct {
-	courier  courier.Courier
-	client   core.Client
-	notifier core.Notifier
-	storage  core.Storage
+	courier *courier.Courier
+	client  core.Client
+	storage core.Storage
 }
 
-func NewPoller(c core.Client, s core.Storage, n core.Notifier, cr courier.Courier) *Poller {
-	return &Poller{client: c, storage: s, notifier: n}
+func NewPoller(c core.Client, s core.Storage, cr *courier.Courier) *Poller {
+	return &Poller{client: c, storage: s, courier: cr}
 }
 
 func (p *Poller) Poll() error {

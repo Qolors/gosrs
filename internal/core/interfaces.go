@@ -7,7 +7,7 @@ type Client interface {
 }
 
 type Notifier interface {
-	SendNotification([]model.StampedData) error
+	SendNotification(day_data []model.StampedData, session_data []model.StampedData) error
 }
 
 type Storage interface {

@@ -25,16 +25,16 @@ func NewDiscordNotifier(whUrl string) *DiscordNotifier {
 	return &DiscordNotifier{webhookUrl: whUrl}
 }
 
-func (dn *DiscordNotifier) SendNotification(data []model.StampedData) {
+func (dn *DiscordNotifier) SendNotification(day_data []model.StampedData, session_data []model.StampedData) error {
 	// Ensure we have enough data points to calculate gains.
-	if len(data) < 2 {
+	if len(session_data) < 2 {
 		fmt.Println("Not enough data to compute session gains.")
-		return
+		return errors.New("Not enough data to compute session gains.")
 	}
 
 	// Compute differences between the first and last stamped data.
-	first := data[0]
-	last := data[len(data)-1]
+	first := session_data[0]
+	last := session_data[len(session_data)-1]
 
 	var skillNames, xpGains, rankGains string
 	for _, s1 := range first.Skills {
@@ -96,7 +96,7 @@ func (dn *DiscordNotifier) SendNotification(data []model.StampedData) {
 	}
 
 	// Generate the daylinechart image using the snapshot-chromedp approach.
-	dayLineChart, err := generateLargeLineChartImage(data)
+	dayLineChart, err := generateLargeLineChartImage(day_data)
 	if err != nil {
 		fmt.Println("Error Generating Chart:", err)
 		// If the image generation fails, send the webhook without the attachment.
@@ -110,10 +110,13 @@ func (dn *DiscordNotifier) SendNotification(data []model.StampedData) {
 		content := "Session XP"
 		if err := sendDiscordWebhookWithAttachment(dn.webhookUrl, content, dayLineChart, "my-chart.png", webhookData); err != nil {
 			fmt.Println("Error sending webhook with attachment:", err)
+			return err
 		} else {
 			fmt.Println("Webhook sent successfully!")
 		}
 	}
+
+	return err
 
 }
 
@@ -277,7 +280,7 @@ func generateLargeLineChartImage(history []model.StampedData) ([]byte, error) {
 		var rankData []opts.LineData
 		for _, item := range limitedHistory {
 			// Find the matching skill rank in this record.
-			var rank int32
+			var rank int64
 			for _, s := range item.Skills {
 				if s.Name == skill.Name {
 					rank = s.XP

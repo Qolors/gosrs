@@ -5,5 +5,5 @@ type Skill struct {
 	Name  string `json:"name"`
 	Rank  int32  `json:"rank"`
 	Level int32  `json:"level"`
-	XP    int32  `json:"xp"`
+	XP    int64  `json:"xp"`
 }
