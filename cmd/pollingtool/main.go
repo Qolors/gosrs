@@ -1,90 +1,46 @@
 package main
 
 import (
-	"fmt"
+	"log"
+	"os"
 	"time"
 
-	"github.com/qolors/gosrs/internal/services"
-	"github.com/qolors/gosrs/internal/services/queue"
+	"github.com/joho/godotenv"
+	"github.com/qolors/gosrs/internal/infra/api/osrsclient"
+	"github.com/qolors/gosrs/internal/infra/notifier"
+	"github.com/qolors/gosrs/internal/infra/storage"
+	"github.com/qolors/gosrs/internal/services/courier"
+	"github.com/qolors/gosrs/internal/services/poller"
 )
-
-var pollBuffer *queue.RingBuffer
-var c *services.Courier
 
 func main() {
 
-	ticker := time.NewTicker(1 * time.Minute)
+	err := godotenv.Load(".env")
+	if err != nil {
+		log.Fatalf("Error loading Discord Webhook: %v", err)
+		return
+	}
+
+	wh := os.Getenv("DISCORD_WEBHOOK")
+
+	client := osrsclient.NewOSRSClient("Wooooo91")
+	storage := storage.NewRingBuffer(1440)
+	notifier := notifier.NewDiscordNotifier(wh)
+	courier := courier.NewCourier(notifier)
+
+	poller := poller.NewPoller(client, storage, courier)
+
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
-	done := make(chan struct{})
-	badrequests := make(chan struct{}, 1)
-
-	c = services.NewCourier()
-
-	pollBuffer = queue.NewRingBuffer(1440)
-
-	fmt.Println("Starting Loop..")
-
 	go func() {
-
-		badRequestCount := 0
-
-		for {
-			select {
-			case <-ticker.C:
-				fmt.Println("Running Poll at", time.Now().UTC())
-				if err := runprocess(); err != nil {
-					badRequestCount++
-					fmt.Println("Job Fail")
-					if badRequestCount >= 3 {
-						fmt.Println("Exiting as too many Bad Requests..")
-						badrequests <- struct{}{}
-						return
-					}
-				} else {
-					fmt.Println("Successful Run")
-					badRequestCount = 0
-				}
+		for range ticker.C {
+			if err := poller.Poll(); err != nil {
+				log.Printf("Poll error: %v\n", err)
 			}
 		}
 	}()
 
-	go func() {
-		<-badrequests
-		fmt.Println("Exiting Program..")
-		close(done)
-	}()
+	select {}
 
-	<-done
-}
-
-func runprocess() error {
-
-	apiResponse, err := services.GetPlayerData()
-
-	if err != nil {
-		return err
-	}
-
-	stamped := queue.StampedData{Skills: apiResponse.Skills, Activities: apiResponse.Activities, Timestamp: time.Now().UTC()}
-
-	haschange := pollBuffer.Add(stamped)
-
-	if haschange {
-		if !c.Running {
-			fmt.Println("Starting new xp session..")
-			c.Start()
-			c.Pack <- stamped
-		} else {
-			c.Pack <- stamped
-		}
-
-	} else {
-		if c.Running {
-			fmt.Println("Session ending due to 0 change..")
-			c.Send <- pollBuffer.GetAll()
-		}
-	}
-
-	return err
 }
