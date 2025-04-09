@@ -27,14 +27,20 @@ func NewDiscordNotifier(whUrl string) *DiscordNotifier {
 
 func (dn *DiscordNotifier) SendNotification(day_data []model.StampedData, session_data []model.StampedData) error {
 	// Ensure we have enough data points to calculate gains.
+	var first model.StampedData
+	var last model.StampedData
+
 	if len(session_data) < 2 {
-		fmt.Println("Not enough data to compute session gains.")
-		return errors.New("Not enough data to compute session gains.")
+
+		first = session_data[0]
+		//-1 for ending session, -1 for packed data, -1 for zero index = -3
+		last = day_data[len(day_data)-3]
+	} else {
+		first = session_data[0]
+		last = session_data[len(session_data)-1]
 	}
 
 	// Compute differences between the first and last stamped data.
-	first := session_data[0]
-	last := session_data[len(session_data)-1]
 
 	var skillNames, xpGains, rankGains string
 	for _, s1 := range first.Skills {
@@ -49,8 +55,8 @@ func (dn *DiscordNotifier) SendNotification(day_data []model.StampedData, sessio
 				if s1.XP-s2.XP == 0 {
 					continue
 				}
-				xpDiff := s2.XP - s1.XP
-				rankDiff := s1.Rank - s2.Rank
+				xpDiff := s1.XP - s2.XP
+				rankDiff := s2.Rank - s1.Rank
 
 				skillNames += s1.Name + "\n"
 				xpGains += fmt.Sprintf("+%d\n", xpDiff)
@@ -59,6 +65,12 @@ func (dn *DiscordNotifier) SendNotification(day_data []model.StampedData, sessio
 			}
 		}
 	}
+
+	top10 := day_data[len(day_data)-10:]
+	// Generate the daylinechart image using the snapshot-chromedp approach.
+	bytes, err := generateLargeLineChartImage(top10)
+
+	image := DiscordEmbedImage{URL: "attachment://my-chart.png"}
 
 	// Build the first embed ("XP Overview") with the session details.
 	overviewEmbed := DiscordEmbed{
@@ -84,6 +96,7 @@ func (dn *DiscordNotifier) SendNotification(day_data []model.StampedData, sessio
 				Inline: true,
 			},
 		},
+		Image:     &image,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -95,25 +108,9 @@ func (dn *DiscordNotifier) SendNotification(day_data []model.StampedData, sessio
 		Embeds:    []DiscordEmbed{overviewEmbed},
 	}
 
-	// Generate the daylinechart image using the snapshot-chromedp approach.
-	dayLineChart, err := generateLargeLineChartImage(day_data)
-	if err != nil {
-		fmt.Println("Error Generating Chart:", err)
-		// If the image generation fails, send the webhook without the attachment.
-		if err := sendDiscordWebhook(dn.webhookUrl, webhookData); err != nil {
-			fmt.Println("Error sending webhook:", err)
-		} else {
-			fmt.Println("Webhook sent successfully!")
-		}
-	} else {
-		// Set a message content and send the webhook with the daylinechart as the attachment.
-		content := "Session XP"
-		if err := sendDiscordWebhookWithAttachment(dn.webhookUrl, content, dayLineChart, "my-chart.png", webhookData); err != nil {
-			fmt.Println("Error sending webhook with attachment:", err)
-			return err
-		} else {
-			fmt.Println("Webhook sent successfully!")
-		}
+	if err := sendDiscordWebhookWithAttachment(dn.webhookUrl, bytes, "my-chart.png", webhookData); err != nil {
+		fmt.Print("Webhook Issue")
+
 	}
 
 	return err
@@ -190,7 +187,7 @@ func sendDiscordWebhook(webhookURL string, webhookData DiscordWebhook) error {
 
 // sendDiscordWebhookWithAttachment sends a Discord webhook message with a file attachment.
 // The fileBytes parameter is the content of the file (e.g. the HTML chart), and fileName is the attachment's name.
-func sendDiscordWebhookWithAttachment(webhookURL, content string, fileBytes []byte, fileName string, webhookData DiscordWebhook) error {
+func sendDiscordWebhookWithAttachment(webhookURL string, fileBytes []byte, fileName string, webhookData DiscordWebhook) error {
 	var b bytes.Buffer
 	writer := multipart.NewWriter(&b)
 
@@ -246,18 +243,13 @@ func generateLargeLineChartImage(history []model.StampedData) ([]byte, error) {
 	}
 
 	// Use only the last 1440 entries (or less if history is shorter).
-	start := 0
-	if len(history) > 1440 {
-		start = len(history) - 1440
-	}
-	limitedHistory := history[start:]
 
 	// Create a new line chart.
 	line := charts.NewLine()
 	line.SetGlobalOptions(
 		charts.WithInitializationOpts(opts.Initialization{
-			Width:           "1920px", // Responsive width
-			Height:          "1080px", // Increased height for clarity
+			Width:           "800px", // Responsive width
+			Height:          "400px", // Increased height for clarity
 			BackgroundColor: "#000000",
 		}),
 		charts.WithXAxisOpts(opts.XAxis{
@@ -267,7 +259,7 @@ func generateLargeLineChartImage(history []model.StampedData) ([]byte, error) {
 
 	// Prepare the X-axis (timestamps in HH:MM format).
 	var timestamps []string
-	for _, item := range limitedHistory {
+	for _, item := range history {
 		timestamps = append(timestamps, item.Timestamp.Format("15:04"))
 	}
 	line.SetXAxis(timestamps)
@@ -278,16 +270,26 @@ func generateLargeLineChartImage(history []model.StampedData) ([]byte, error) {
 			continue
 		}
 		var rankData []opts.LineData
-		for _, item := range limitedHistory {
+		for _, item := range history {
+
 			// Find the matching skill rank in this record.
 			var rank int64
+			var hasnoexp bool
 			for _, s := range item.Skills {
 				if s.Name == skill.Name {
+					if s.XP-skill.XP == 0 {
+						hasnoexp = true
+						break
+					}
 					rank = s.XP
 					break
 				}
 			}
-			rankData = append(rankData, opts.LineData{Value: rank})
+
+			if !hasnoexp {
+				rankData = append(rankData, opts.LineData{Value: rank})
+			}
+
 		}
 		smooth := true
 		line.AddSeries(skill.Name, rankData).

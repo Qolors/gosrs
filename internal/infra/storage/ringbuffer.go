@@ -14,6 +14,7 @@ type RingBuffer struct {
 	next   int
 	full   bool
 	mu     sync.Mutex
+	first  bool
 }
 
 // Creates a new buffer with the provided capacity
@@ -21,6 +22,7 @@ func NewRingBuffer(capacity int) *RingBuffer {
 	return &RingBuffer{
 		buffer: make([]model.StampedData, capacity),
 		size:   capacity,
+		first:  true,
 	}
 }
 
@@ -52,6 +54,17 @@ func (rb *RingBuffer) Add(item model.StampedData) bool {
 			fmt.Println("Change in xp detected")
 			change = true
 		}
+	}
+
+	if rb.first {
+
+		for i := 0; i < rb.size; i++ {
+			rb.buffer[i] = item
+		}
+
+		rb.first = false
+
+		return change
 	}
 
 	rb.buffer[rb.next] = item
